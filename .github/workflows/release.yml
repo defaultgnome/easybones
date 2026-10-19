@@ -1,9 +1,12 @@
 name: release
 
-# Manual: Actions > release > Run workflow. Tags v<manifest version> on the chosen
-# branch and publishes a GitHub release with the zip. Bump version + CHANGELOG first.
+# Auto: runs on push to main touching the manifest; releases only if tag v<version> is new.
+# Manual: Actions > release > Run workflow on any branch. Bump version + CHANGELOG first.
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [blender_manifest.toml]
 
 permissions:
   contents: write
@@ -17,8 +20,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ZIP=$(./pack.sh)
           VERSION=$(sed -n 's/^version *= *"\(.*\)"/\1/p' blender_manifest.toml)
+          # Manifest edited without a version bump -> nothing to release
+          if gh release view "v$VERSION" >/dev/null 2>&1; then echo "v$VERSION already released"; exit 0; fi
+          ZIP=$(./pack.sh)
           # Notes = this version's CHANGELOG section
           awk -v v="$VERSION" '/^## /{p = index($0, "[" v "]")} p && !/^## /' CHANGELOG.md > notes.md
           test -s notes.md || { echo "No CHANGELOG entry for $VERSION"; exit 1; }
