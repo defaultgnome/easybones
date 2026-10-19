@@ -52,16 +52,16 @@ def close(a, b):
 
 
 select(lambda co: co.z < 0)  # bottom face -> center (0,0,-1)
-bpy.ops.easybones.new(name="leg.01.L")
+bpy.ops.mesh.easybones_new(name="leg.01.L")
 b = arm.data.bones["leg.01.L"]
 assert close(world(b, "head_local"), (0, 0, -1)), world(b, "head_local")
 
 select(lambda co: co.z > 0)  # top face -> (0,0,1)
-bpy.ops.easybones.tail()
+bpy.ops.mesh.easybones_tail()
 assert close(world(b, "tail_local"), (0, 0, 1))
 
 select(lambda co: co.x > 0 and co.y > 0 and co.z > 0)  # one corner
-bpy.ops.easybones.extend(name=easybones.increment(bpy.context.scene.easybones_last_name))
+bpy.ops.mesh.easybones_extend(name=easybones.increment(arm.data.bones.active.name))
 c = arm.data.bones["leg.02.L"]
 assert c.parent == b and c.use_connect
 assert close(world(c, "tail_local"), (1, 1, 1))
@@ -70,8 +70,10 @@ assert bpy.context.mode == 'EDIT_MESH' and bpy.context.object == cube
 
 select(lambda co: False)
 try:
-    bpy.ops.easybones.tail()
+    bpy.ops.mesh.easybones_tail()
     raise AssertionError("expected error")
 except RuntimeError as e:
     assert "No vertices selected" in str(e)
+assert easybones.EASYBONES_PT_panel.bl_category == "Rigging"
+easybones.unregister()
 print("EASYBONES OK")

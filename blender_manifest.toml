@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "easybones"
-version = "0.1.0"
+version = "0.1.1"
 name = "EasyBones"
 tagline = "Place bones from vertex selections without leaving mesh edit"
 maintainer = "defaultgnome"

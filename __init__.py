@@ -83,16 +83,30 @@ class _Base:
         return arm, arm.matrix_world.inverted(), c
 
 
-class EASYBONES_OT_new(_Base, bpy.types.Operator):
+def invoke_then_rename(op, context):
+    """Run op, then pop up an F2-style name field on the new bone."""
+    ret = op.execute(context)
+    if 'FINISHED' in ret:
+        bpy.ops.wm.call_panel(name="EASYBONES_PT_rename", keep_open=False)
+    return ret
+
+
+def active_name(context):
+    arm = context.scene.easybones_armature
+    b = arm.data.bones.active
+    return b.name if b else "Bone"
+
+
+class MESH_OT_easybones_new(_Base, bpy.types.Operator):
     """New orphan bone with its head at the selection center"""
-    bl_idname = "easybones.new"
-    bl_label = "New"
+    bl_idname = "mesh.easybones_new"  # mesh. prefix lets right-click Assign Shortcut find the Mesh keymap
+    bl_label = "EasyBones New"
 
     name: bpy.props.StringProperty(name="Name", default="Bone")
 
     def invoke(self, context, event):
-        self.name = context.scene.easybones_last_name
-        return context.window_manager.invoke_props_dialog(self)
+        self.name = active_name(context)
+        return invoke_then_rename(self, context)
 
     def execute(self, context):
         prep = self.prepare(context, need_active=False)
@@ -108,14 +122,13 @@ class EASYBONES_OT_new(_Base, bpy.types.Operator):
             return b
 
         edit_armature(context, arm, make)
-        context.scene.easybones_last_name = self.name
         return {'FINISHED'}
 
 
-class EASYBONES_OT_tail(_Base, bpy.types.Operator):
+class MESH_OT_easybones_tail(_Base, bpy.types.Operator):
     """Move the active bone's tail to the selection center"""
-    bl_idname = "easybones.tail"
-    bl_label = "Tail"
+    bl_idname = "mesh.easybones_tail"
+    bl_label = "EasyBones Tail"
 
     def execute(self, context):
         prep = self.prepare(context, need_active=True)
@@ -137,16 +150,16 @@ class EASYBONES_OT_tail(_Base, bpy.types.Operator):
         return {'FINISHED'}
 
 
-class EASYBONES_OT_extend(_Base, bpy.types.Operator):
+class MESH_OT_easybones_extend(_Base, bpy.types.Operator):
     """New bone connected to the active bone's tail, its tail at the selection center"""
-    bl_idname = "easybones.extend"
-    bl_label = "Extend"
+    bl_idname = "mesh.easybones_extend"
+    bl_label = "EasyBones Extend"
 
     name: bpy.props.StringProperty(name="Name", default="Bone")
 
     def invoke(self, context, event):
-        self.name = increment(context.scene.easybones_last_name)
-        return context.window_manager.invoke_props_dialog(self)
+        self.name = increment(active_name(context))
+        return invoke_then_rename(self, context)
 
     def execute(self, context):
         prep = self.prepare(context, need_active=True)
@@ -168,15 +181,27 @@ class EASYBONES_OT_extend(_Base, bpy.types.Operator):
             return b
 
         edit_armature(context, arm, make)
-        context.scene.easybones_last_name = self.name
         return {'FINISHED'}
+
+
+class EASYBONES_PT_rename(bpy.types.Panel):
+    """Popup only (wm.call_panel), mirrors Blender's F2 TOPBAR_PT_name"""
+    bl_label = "Bone Name"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+
+    def draw(self, context):
+        b = context.scene.easybones_armature.data.bones.active
+        row = self.layout.row()
+        row.activate_init = True  # focus field with text selected, Enter confirms
+        row.prop(b, "name", text="", icon='BONE_DATA')
 
 
 class EASYBONES_PT_panel(bpy.types.Panel):
     bl_label = "EasyBones"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = "EasyBones"
+    bl_category = "Rigging"  # overwritten from prefs on register
     bl_context = "mesh_edit"
 
     def draw(self, context):
@@ -188,12 +213,33 @@ class EASYBONES_PT_panel(bpy.types.Panel):
         active = arm.data.bones.active if arm and arm.type == 'ARMATURE' else None
         col.label(text=f"Active: {active.name if active else '-'}", icon='BONE_DATA')
         row = col.row(align=True)
-        row.operator("easybones.new")
-        row.operator("easybones.tail")
-        row.operator("easybones.extend")
+        row.operator("mesh.easybones_new", text="New")
+        row.operator("mesh.easybones_tail", text="Tail")
+        row.operator("mesh.easybones_extend", text="Extend")
 
 
-classes = (EASYBONES_OT_new, EASYBONES_OT_tail, EASYBONES_OT_extend, EASYBONES_PT_panel)
+def update_category(self, context):
+    bpy.utils.unregister_class(EASYBONES_PT_panel)
+    EASYBONES_PT_panel.bl_category = self.panel_category
+    bpy.utils.register_class(EASYBONES_PT_panel)
+
+
+class EASYBONES_Prefs(bpy.types.AddonPreferences):
+    bl_idname = __package__
+
+    panel_category: bpy.props.StringProperty(
+        name="Panel Category", default="Rigging", update=update_category)
+
+    def draw(self, context):
+        col = self.layout.box().column()
+        col.label(text="Set the category to show EasyBones panel:")
+        col.prop(self, "panel_category")
+
+
+classes = (MESH_OT_easybones_new, MESH_OT_easybones_tail, MESH_OT_easybones_extend,
+           EASYBONES_PT_rename)
+OPS = ("mesh.easybones_new", "mesh.easybones_tail", "mesh.easybones_extend")
+addon_keymaps = []
 
 
 def register():
@@ -206,14 +252,29 @@ def register():
     S.easybones_armature = bpy.props.PointerProperty(
         name="Armature", type=bpy.types.Object, poll=lambda self, ob: ob.type == 'ARMATURE')
     S.easybones_roll = bpy.props.EnumProperty(name="Roll", items=roll_items, default='DEFAULT')
-    S.easybones_last_name = bpy.props.StringProperty(default="Bone")
     for c in classes:
         bpy.utils.register_class(c)
+    bpy.utils.register_class(EASYBONES_Prefs)
+    addon = bpy.context.preferences.addons.get(__package__)
+    if addon:
+        EASYBONES_PT_panel.bl_category = addon.preferences.panel_category
+    bpy.utils.register_class(EASYBONES_PT_panel)
+
+    # Unbound entries so they show in Preferences > Keymap > Mesh, ready to assign
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name="Mesh")
+        for op in OPS:
+            addon_keymaps.append((km, km.keymap_items.new(op, 'NONE', 'PRESS')))
 
 
 def unregister():
+    for km, kmi in addon_keymaps:
+        km.keymap_items.remove(kmi)
+    addon_keymaps.clear()
+    bpy.utils.unregister_class(EASYBONES_PT_panel)
+    bpy.utils.unregister_class(EASYBONES_Prefs)
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
     del bpy.types.Scene.easybones_armature
     del bpy.types.Scene.easybones_roll
-    del bpy.types.Scene.easybones_last_name
