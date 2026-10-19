@@ -170,6 +170,8 @@ class _Base:
 
     def prepare(self, context, need_active=True, need_points=True):
         """Returns (armature, world->armature matrix, selected points) or None after reporting."""
+        # redo panel re-runs us right after an undo, before the depsgraph refreshes matrix_world
+        context.view_layer.update()
         arm = target_armature(context)
         if not arm.visible_get():
             self.report({'ERROR'}, f"Armature '{arm.name}' is hidden")
