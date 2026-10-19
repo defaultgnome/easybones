@@ -137,7 +137,8 @@ def active_name(context):
 class _Base:
     bl_options = {'REGISTER', 'UNDO'}
 
-    roll: bpy.props.EnumProperty(name="Roll", items=roll_items, default=0)
+    roll: bpy.props.EnumProperty(name="Roll", items=roll_items, default=0,
+                                 description="How to recalculate the bone's roll")
 
     @classmethod
     def poll(cls, context):
@@ -199,8 +200,8 @@ class MESH_OT_easybones_new(_Base, bpy.types.Operator):
     bl_idname = "mesh.easybones_new"  # mesh. prefix lets right-click Assign Shortcut find the Mesh keymap
     bl_label = "EasyBones New"
 
-    name: bpy.props.StringProperty(name="Name", default="Bone")
-    parent: bpy.props.StringProperty(name="Parent")
+    name: bpy.props.StringProperty(name="Name", default="Bone", description="Name for the new bone")
+    parent: bpy.props.StringProperty(name="Parent", description="Parent for the new bone (empty = none)")
 
     def execute(self, context):
         prep = self.prepare(context, need_active=False)
@@ -264,7 +265,7 @@ class MESH_OT_easybones_extend(_Base, bpy.types.Operator):
     bl_idname = "mesh.easybones_extend"
     bl_label = "EasyBones Extend"
 
-    name: bpy.props.StringProperty(name="Name", default="Bone")
+    name: bpy.props.StringProperty(name="Name", default="Bone", description="Name for the new bone")
 
     def suggest_name(self, context):
         return increment(active_name(context))
@@ -301,8 +302,8 @@ class MESH_OT_easybones_span(_Base, bpy.types.Operator):
         ('ACTIVE', "Active", "Refit the active bone (connected neighbors follow)"),
     ])
     invert: bpy.props.BoolProperty(name="Invert", description="Swap head and tail")
-    name: bpy.props.StringProperty(name="Name", default="Bone")
-    parent: bpy.props.StringProperty(name="Parent")
+    name: bpy.props.StringProperty(name="Name", default="Bone", description="Name for the new bone")
+    parent: bpy.props.StringProperty(name="Parent", description="Parent for the new bone (empty = none)")
 
     def redo_props(self, context):
         if self.target == 'ACTIVE':
@@ -338,7 +339,7 @@ class MESH_OT_easybones_parent(_Base, bpy.types.Operator):
     bl_idname = "mesh.easybones_parent"
     bl_label = "EasyBones Parent"
 
-    parent: bpy.props.StringProperty(name="Parent")
+    parent: bpy.props.StringProperty(name="Parent", description="Bone to parent the active bone to (empty = clear parent)")
     pick: bpy.props.BoolProperty(name="Pick", options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, event):
@@ -456,7 +457,8 @@ class EASYBONES_Prefs(bpy.types.AddonPreferences):
     bl_idname = __package__
 
     panel_category: bpy.props.StringProperty(
-        name="Panel Category", default="Rigging", update=update_category)
+        name="Panel Category", default="Rigging", update=update_category,
+        description="Sidebar tab the EasyBones panel appears in")
 
     def draw(self, context):
         col = self.layout.box().column()
@@ -475,8 +477,10 @@ addon_keymaps = []
 def register():
     S = bpy.types.Scene
     S.easybones_armature = bpy.props.PointerProperty(
-        name="Armature", type=bpy.types.Object, poll=lambda self, ob: ob.type == 'ARMATURE')
-    S.easybones_roll = bpy.props.EnumProperty(name="Roll", items=roll_items, default=0)
+        name="Armature", description="Armature that EasyBones creates and edits bones in",
+        type=bpy.types.Object, poll=lambda self, ob: ob.type == 'ARMATURE')
+    S.easybones_roll = bpy.props.EnumProperty(
+        name="Roll", items=roll_items, default=0, description="Default roll mode for EasyBones tools")
     S.easybones_parent = bpy.props.StringProperty(
         name="Parent", description="Parent for new bones (empty = none)")
     S.easybones_flip = bpy.props.StringProperty(options={'HIDDEN'})  # meshes Flip returns to

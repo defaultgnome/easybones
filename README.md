@@ -28,6 +28,7 @@ Shortcuts: **Shift+Alt+B** opens the EasyBones pie in mesh edit (Parent… there
 
 ```sh
 ./pack.sh   # -> dist/easybones_v<version>.zip
+./pack.sh --validate   # also run blender --command extension validate (blender in PATH)
 /Applications/Blender.app/Contents/MacOS/Blender -b --factory-startup --python test_easybones.py
 ```
 

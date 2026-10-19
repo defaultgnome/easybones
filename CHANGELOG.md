@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.0]
+
+- Tooltips for every setting (Roll, Name, Parent, Armature, Panel Category).
+- Fix: redoing an op (Adjust Last Operation) placed bones around the object origin.
+- `pack.sh --validate` runs Blender's extension validator on the zip.
+
 ## [0.2.0]
 
 - Span: bone along the selection's long axis (cylinder end to end), or refit the active bone.
