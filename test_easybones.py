@@ -140,23 +140,25 @@ bones().active = b
 expect_error("zero length", bpy.ops.mesh.easybones_tail)
 assert close(world(bones()["leg.02.L"], "head_local"), (1, -1, 1))
 
-# Auto parent: scene target applies to new bones, keep offset
-bpy.context.scene.easybones_parent = "leg.01.L"
-bpy.ops.mesh.easybones_new(name="knee", parent="leg.01.L")
+# New bones are unparented; Move translates the whole bone, connected neighbors follow
+select(lambda co: co.z < 0)  # (0,0,-1)
+bpy.ops.mesh.easybones_new(name="knee")
 k = bones()["knee"]
-assert k.parent.name == "leg.01.L" and not k.use_connect
-expect_error("No bone named", bpy.ops.mesh.easybones_new, name="x", parent="nope")
-assert "x" not in bones()
+assert k.parent is None
+k_vec = k.tail_local - k.head_local
+select(lambda co: co.z > 0)  # (0,0,1)
+bpy.ops.mesh.easybones_move()
+k = bones()["knee"]
+assert close(world(k, "head_local"), (0, 0, 1)) and close(k.tail_local - k.head_local, k_vec)
 
-# Parent active: cycle refused, then clear
-bones().active = bones()["leg.01.L"]
-expect_error("or its child", bpy.ops.mesh.easybones_parent, parent="knee")
-bones().active = bones()["knee"]
-bpy.ops.mesh.easybones_parent(parent="leg.02.L", pick=True)
-assert bones()["knee"].parent.name == "leg.02.L"
-assert bpy.context.scene.easybones_parent == "leg.02.L"
-bpy.ops.mesh.easybones_parent(parent="")
-assert bones()["knee"].parent is None
+bones().active = bones()["leg.02.L"]
+c = bones()["leg.02.L"]
+c_vec = c.tail_local - c.head_local
+select(lambda co: co.x < 0 and co.y < 0 and co.z > 0)  # (-1,-1,1)
+bpy.ops.mesh.easybones_move()
+b, c = bones()["leg.01.L"], bones()["leg.02.L"]
+assert close(world(c, "head_local"), (-1, -1, 1)) and close(world(b, "tail_local"), (-1, -1, 1))
+assert close(c.tail_local - c.head_local, c_vec) and c.use_connect
 
 # Span a tilted cylinder: head at the lower end, invert flips
 edit(cyl)

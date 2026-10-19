@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Move: translate the whole active bone so its head lands on the selection center (keeps length and direction).
+- Removed parenting: the Parent field, Parent op and pie entry are gone. New and Span bones are unparented; Extend still connects to the active bone. Parent in armature edit (Ctrl+P).
+
 ## [0.3.0]
 
 - Tooltips for every setting (Roll, Name, Parent, Armature, Panel Category).

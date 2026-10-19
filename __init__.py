@@ -73,14 +73,6 @@ def move(eb, head=None, tail=None):
         k.head = t
 
 
-def find_bone(ebs, name):
-    """Edit bone `name`, None for ''; call before creating anything so Abort leaves no stray bone."""
-    p = ebs.get(name) if name else None
-    if name and p is None:
-        raise Abort(f"No bone named '{name}'")
-    return p
-
-
 def enter_edit(context, objs, active):
     """From any mode, end up in edit mode of objs with `active` active."""
     if context.mode != 'OBJECT':
@@ -148,8 +140,6 @@ class _Base:
         """Prefill from the panel; the redo panel then edits these per-op."""
         s = context.scene
         self.roll = s.easybones_roll
-        if 'parent' in self.properties.rna_type.properties:
-            self.parent = s.easybones_parent
         if 'name' in self.properties.rna_type.properties:
             self.name = self.suggest_name(context)
         return self.execute(context)
@@ -158,13 +148,8 @@ class _Base:
         return active_name(context)
 
     def draw(self, context):
-        """Redo panel: bone-name fields get a search dropdown."""
-        data = target_armature(context).data
         for p in self.redo_props(context):
-            if p == 'parent':
-                self.layout.prop_search(self, p, data, "bones")
-            else:
-                self.layout.prop(self, p)
+            self.layout.prop(self, p)
 
     def redo_props(self, context):
         return [p for p in self.properties.rna_type.properties.keys() if p != 'rna_type']
@@ -201,7 +186,6 @@ class MESH_OT_easybones_new(_Base, bpy.types.Operator):
     bl_label = "EasyBones New"
 
     name: bpy.props.StringProperty(name="Name", default="Bone", description="Name for the new bone")
-    parent: bpy.props.StringProperty(name="Parent", description="Parent for the new bone (empty = none)")
 
     def execute(self, context):
         prep = self.prepare(context, need_active=False)
@@ -211,11 +195,9 @@ class MESH_OT_easybones_new(_Base, bpy.types.Operator):
         c = bbox_center(pts)
 
         def make(ebs):
-            p = find_bone(ebs, self.parent)
             b = ebs.new(self.name)
             b.head = inv @ c
             b.tail = inv @ (c + TEMP_TAIL)
-            b.parent = p
             ebs.active = b
             return b
 
@@ -256,6 +238,27 @@ class MESH_OT_easybones_tail(_Base, bpy.types.Operator):
         def fn(ebs):
             move(ebs.active, tail=inv @ c)
             return ebs.active
+
+        return self.run(context, arm, fn)
+
+
+class MESH_OT_easybones_move(_Base, bpy.types.Operator):
+    """Move the whole active bone so its head lands on the selection center, keeping its length and direction"""
+    bl_idname = "mesh.easybones_move"
+    bl_label = "EasyBones Move"
+
+    def execute(self, context):
+        prep = self.prepare(context)
+        if not prep:
+            return {'CANCELLED'}
+        arm, inv, pts = prep
+        c = bbox_center(pts)
+
+        def fn(ebs):
+            eb = ebs.active
+            h = inv @ c
+            move(eb, head=h, tail=h + (eb.tail - eb.head))
+            return eb
 
         return self.run(context, arm, fn)
 
@@ -303,12 +306,11 @@ class MESH_OT_easybones_span(_Base, bpy.types.Operator):
     ])
     invert: bpy.props.BoolProperty(name="Invert", description="Swap head and tail")
     name: bpy.props.StringProperty(name="Name", default="Bone", description="Name for the new bone")
-    parent: bpy.props.StringProperty(name="Parent", description="Parent for the new bone (empty = none)")
 
     def redo_props(self, context):
         if self.target == 'ACTIVE':
             return ['target', 'invert', 'roll']
-        return ['target', 'invert', 'name', 'parent', 'roll']
+        return ['target', 'invert', 'name', 'roll']
 
     def execute(self, context):
         prep = self.prepare(context, need_active=self.target == 'ACTIVE')
@@ -324,47 +326,10 @@ class MESH_OT_easybones_span(_Base, bpy.types.Operator):
             if self.target == 'ACTIVE':
                 move(ebs.active, head=h, tail=t)
                 return ebs.active
-            p = find_bone(ebs, self.parent)
             b = ebs.new(self.name)
             b.head, b.tail = h, t
-            b.parent = p
             ebs.active = b
             return b
-
-        return self.run(context, arm, fn)
-
-
-class MESH_OT_easybones_parent(_Base, bpy.types.Operator):
-    """Parent the active bone (keep offset). Pick: choose the parent, also used for new bones"""
-    bl_idname = "mesh.easybones_parent"
-    bl_label = "EasyBones Parent"
-
-    parent: bpy.props.StringProperty(name="Parent", description="Bone to parent the active bone to (empty = clear parent)")
-    pick: bpy.props.BoolProperty(name="Pick", options={'HIDDEN', 'SKIP_SAVE'})
-
-    def invoke(self, context, event):
-        self.parent = context.scene.easybones_parent
-        if self.pick:
-            return context.window_manager.invoke_props_dialog(self)
-        return self.execute(context)
-
-    def redo_props(self, context):
-        return ['parent']
-
-    def execute(self, context):
-        prep = self.prepare(context, need_points=False)
-        if not prep:
-            return {'CANCELLED'}
-        arm = prep[0]
-        if self.pick:
-            context.scene.easybones_parent = self.parent
-
-        def fn(ebs):
-            eb, p = ebs.active, find_bone(ebs, self.parent)
-            if p and (p == eb or eb in p.parent_recursive):
-                raise Abort(f"'{p.name}' is '{eb.name}' or its child")
-            eb.use_connect = False  # keep offset
-            eb.parent = p
 
         return self.run(context, arm, fn)
 
@@ -413,7 +378,7 @@ class EASYBONES_MT_pie(bpy.types.Menu):
         pie.operator("mesh.easybones_extend", text="Extend", icon='CON_FOLLOWPATH')
         pie.operator("mesh.easybones_flip", text="Flip to Armature", icon='ARMATURE_DATA')
         pie.operator("mesh.easybones_span", text="Span", icon='DRIVER_DISTANCE')
-        pie.operator("mesh.easybones_parent", text="Parent…", icon='LINKED').pick = True
+        pie.operator("mesh.easybones_move", text="Move", icon='EMPTY_ARROWS')
         pie.separator()
         pie.operator("mesh.easybones_head", text="Head", icon='TRIA_DOWN')
         pie.operator("mesh.easybones_tail", text="Tail", icon='TRIA_UP')
@@ -434,9 +399,6 @@ class EASYBONES_PT_panel(bpy.types.Panel):
         arm = target_armature(context)
         if arm:
             col.prop_search(arm.data.bones, "active", arm.data, "bones", text="Active")
-            row = col.row(align=True)
-            row.prop_search(s, "easybones_parent", arm.data, "bones", text="Parent")
-            row.operator("mesh.easybones_parent", text="", icon='LINKED')
         row = col.row(align=True)
         row.operator("mesh.easybones_new", text="New")
         row.operator("mesh.easybones_extend", text="Extend")
@@ -444,6 +406,7 @@ class EASYBONES_PT_panel(bpy.types.Panel):
         row = col.row(align=True)
         row.operator("mesh.easybones_head", text="Head")
         row.operator("mesh.easybones_tail", text="Tail")
+        row.operator("mesh.easybones_move", text="Move")
         col.operator("mesh.easybones_flip", text="Flip to Armature")
 
 
@@ -467,10 +430,10 @@ class EASYBONES_Prefs(bpy.types.AddonPreferences):
 
 
 classes = (MESH_OT_easybones_new, MESH_OT_easybones_head, MESH_OT_easybones_tail,
-           MESH_OT_easybones_extend, MESH_OT_easybones_span, MESH_OT_easybones_parent,
+           MESH_OT_easybones_move, MESH_OT_easybones_extend, MESH_OT_easybones_span,
            MESH_OT_easybones_flip, EASYBONES_MT_pie)
 OPS = ("mesh.easybones_new", "mesh.easybones_head", "mesh.easybones_tail",
-       "mesh.easybones_extend", "mesh.easybones_span", "mesh.easybones_parent")
+       "mesh.easybones_move", "mesh.easybones_extend", "mesh.easybones_span")
 addon_keymaps = []
 
 
@@ -481,8 +444,6 @@ def register():
         type=bpy.types.Object, poll=lambda self, ob: ob.type == 'ARMATURE')
     S.easybones_roll = bpy.props.EnumProperty(
         name="Roll", items=roll_items, default=0, description="Default roll mode for EasyBones tools")
-    S.easybones_parent = bpy.props.StringProperty(
-        name="Parent", description="Parent for new bones (empty = none)")
     S.easybones_flip = bpy.props.StringProperty(options={'HIDDEN'})  # meshes Flip returns to
     for c in classes:
         bpy.utils.register_class(c)
@@ -516,5 +477,4 @@ def unregister():
         bpy.utils.unregister_class(c)
     del bpy.types.Scene.easybones_armature
     del bpy.types.Scene.easybones_roll
-    del bpy.types.Scene.easybones_parent
     del bpy.types.Scene.easybones_flip
