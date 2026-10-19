@@ -1,0 +1,11 @@
+schema_version = "1.0.0"
+
+id = "easybones"
+version = "0.1.0"
+name = "EasyBones"
+tagline = "Place bones from vertex selections without leaving mesh edit"
+maintainer = "defaultgnome"
+type = "add-on"
+blender_version_min = "5.0.0"
+license = ["SPDX:GPL-3.0-or-later"]
+tags = ["Rigging"]
