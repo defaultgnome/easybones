@@ -1,5 +1,6 @@
 import math
 import re
+from contextlib import contextmanager
 
 import bmesh
 import bpy
@@ -85,7 +86,7 @@ def enter_edit(context, objs, active):
     bpy.ops.object.mode_set(mode='EDIT')
 
 
-def edit_armature(context, arm, fn, roll='DEFAULT'):
+def edit_armature(context, arm, fn):
     """Hop into the armature's edit mode, run fn(edit_bones), hop back to mesh edit."""
     meshes = [ob for ob in context.objects_in_mode if ob.type == 'MESH']
     active = context.view_layer.objects.active
@@ -93,27 +94,10 @@ def edit_armature(context, arm, fn, roll='DEFAULT'):
 
     enter_edit(context, [arm], arm)
     try:
-        bone = fn(arm.data.edit_bones)
-        if bone and roll != 'DEFAULT':
-            bpy.ops.armature.select_all(action='DESELECT')
-            bone.select = bone.select_head = bone.select_tail = True
-            bpy.ops.armature.calculate_roll(type=roll)
+        fn(arm.data.edit_bones)
     finally:
         enter_edit(context, meshes, active)
         arm.select_set(arm_was_selected)
-
-
-_roll_items = []
-
-
-def roll_items(self, context):
-    """Blender's own calculate_roll modes, plus DEFAULT = leave roll alone."""
-    if not _roll_items:
-        _roll_items.append(('DEFAULT', "Default", "Leave roll as Blender sets it"))
-        _roll_items.extend(
-            (i.identifier, i.name, i.description)
-            for i in bpy.ops.armature.calculate_roll.get_rna_type().properties['type'].enum_items)
-    return _roll_items
 
 
 def target_armature(context):
@@ -126,11 +110,79 @@ def active_name(context):
     return b.name if b else "Bone"
 
 
+def weight_armature(context):
+    """Armature that deforms the active mesh (its Armature modifier), else the target armature."""
+    ob = context.object
+    for m in (ob.modifiers if ob else ()):
+        if m.type == 'ARMATURE' and m.object:
+            return m.object
+    return target_armature(context)
+
+
+def bone_context(context):
+    """(armature, bones to browse) for the current mode, or None.
+    Mesh edit and weight paint browse the armature's bones; armature edit its edit bones."""
+    if context.mode == 'EDIT_MESH':
+        arm = target_armature(context)
+    elif context.mode == 'PAINT_WEIGHT':
+        arm = weight_armature(context)
+    elif context.mode in {'EDIT_ARMATURE', 'POSE'}:
+        arm = context.object if context.object and context.object.type == 'ARMATURE' else None
+    else:
+        return None
+    if arm is None:
+        return None
+    return arm, arm.data.edit_bones if context.mode == 'EDIT_ARMATURE' else arm.data.bones
+
+
+def set_selected(arm, bone, state, edit):
+    """Select a bone. Edit bones carry the flags; otherwise the pose bone does (newer Blender
+    dropped them from Bone), falling back to the Bone for older versions."""
+    if edit:
+        bone.select = bone.select_head = bone.select_tail = state
+        return
+    pb = arm.pose.bones.get(bone.name)
+    target = pb if pb is not None and hasattr(pb, 'select') else bone
+    if hasattr(target, 'select'):
+        target.select = state
+
+
+@contextmanager
+def armature_mode(context, mode):
+    """Run the body with the active armature in 'EDIT' or 'POSE' mode, then restore the mode we were in."""
+    back = {'EDIT_ARMATURE': 'EDIT', 'POSE': 'POSE'}[context.mode]
+    if back != mode:
+        bpy.ops.object.mode_set(mode=mode)
+    try:
+        yield
+    finally:
+        if back != mode:
+            bpy.ops.object.mode_set(mode=back)
+
+
+def is_selected(pose_bone):
+    target = pose_bone if hasattr(pose_bone, 'select') else pose_bone.bone
+    return getattr(target, 'select', False)
+
+
+
+def chain_step(names, name, step):
+    """Name `step` places along name's numbered series (same text around the last number),
+    wrapping at the ends: finger.01.L -> finger.02.L. None if no number or no other bone."""
+    m = re.match(r'^(.*?)(\d+)(\D*)$', name)
+    if not m:
+        return None
+    pre, _, post = m.groups()
+    rx = re.compile(rf"^{re.escape(pre)}(\d+){re.escape(post)}$")
+    series = sorted((int(g.group(1)), n) for n in names if (g := rx.match(n)))
+    if len(series) < 2:
+        return None
+    ordered = [n for _, n in series]
+    return ordered[(ordered.index(name) + step) % len(ordered)]
+
+
 class _Base:
     bl_options = {'REGISTER', 'UNDO'}
-
-    roll: bpy.props.EnumProperty(name="Roll", items=roll_items, default=0,
-                                 description="How to recalculate the bone's roll")
 
     @classmethod
     def poll(cls, context):
@@ -138,8 +190,6 @@ class _Base:
 
     def invoke(self, context, event):
         """Prefill from the panel; the redo panel then edits these per-op."""
-        s = context.scene
-        self.roll = s.easybones_roll
         if 'name' in self.properties.rna_type.properties:
             self.name = self.suggest_name(context)
         return self.execute(context)
@@ -173,7 +223,7 @@ class _Base:
 
     def run(self, context, arm, fn):
         try:
-            edit_armature(context, arm, fn, self.roll)
+            edit_armature(context, arm, fn)
         except Abort as e:
             self.report({'ERROR'}, str(e))
             return {'CANCELLED'}
@@ -309,8 +359,8 @@ class MESH_OT_easybones_span(_Base, bpy.types.Operator):
 
     def redo_props(self, context):
         if self.target == 'ACTIVE':
-            return ['target', 'invert', 'roll']
-        return ['target', 'invert', 'name', 'roll']
+            return ['target', 'invert']
+        return ['target', 'invert', 'name']
 
     def execute(self, context):
         prep = self.prepare(context, need_active=self.target == 'ACTIVE')
@@ -335,7 +385,7 @@ class MESH_OT_easybones_span(_Base, bpy.types.Operator):
 
 
 class MESH_OT_easybones_flip(bpy.types.Operator):
-    """Flip between mesh edit and the target armature's edit mode"""
+    """Flip between mesh edit and the target armature's edit mode (from pose mode, back to the meshes)"""
     bl_idname = "mesh.easybones_flip"
     bl_label = "EasyBones Flip"
     bl_options = {'REGISTER', 'UNDO'}
@@ -344,7 +394,7 @@ class MESH_OT_easybones_flip(bpy.types.Operator):
     def poll(cls, context):
         if context.mode == 'EDIT_MESH':
             return target_armature(context) is not None
-        return context.mode == 'EDIT_ARMATURE'
+        return context.mode in {'EDIT_ARMATURE', 'POSE'}
 
     def execute(self, context):
         s = context.scene
@@ -362,10 +412,215 @@ class MESH_OT_easybones_flip(bpy.types.Operator):
         meshes = [ob for n in s.easybones_flip.split("\n")
                   if (ob := s.objects.get(n)) and ob.type == 'MESH' and ob.visible_get()]
         if not meshes:
-            self.report({'ERROR'}, "No mesh to return to")
+            self.report({'ERROR'}, "No mesh to return to. First select a mesh and flip from there")
             return {'CANCELLED'}
         enter_edit(context, meshes, meshes[0])
         return {'FINISHED'}
+
+
+class _Select:
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return bone_context(context) is not None
+
+    def pick(self, context, arm, bones, bone):
+        """Make bone the active (and, outside mesh edit, only selected) bone."""
+        if context.mode != 'EDIT_MESH':
+            if bone.hide:
+                self.report({'WARNING'}, f"Bone '{bone.name}' is hidden")
+                return {'CANCELLED'}
+            edit = context.mode == 'EDIT_ARMATURE'
+            for b in bones:
+                set_selected(arm, b, False, edit)
+            set_selected(arm, bone, True, edit)
+        bones.active = bone
+        if context.mode == 'PAINT_WEIGHT':  # like Ctrl+Shift+click: paint this bone's vertex group
+            ob = context.object
+            vg = ob.vertex_groups.get(bone.name)
+            if vg:
+                ob.vertex_groups.active_index = vg.index
+            else:
+                self.report({'INFO'}, f"'{bone.name}' has no vertex group on {ob.name}")
+        return {'FINISHED'}
+
+    def step(self, context, step):
+        arm, bones = bone_context(context)
+        active = bones.active
+        if active is None:
+            self.report({'WARNING'}, "No active bone")
+            return {'CANCELLED'}
+        if context.scene.easybones_follow == 'PARENTING':
+            if step > 0:
+                other = active.children[0] if active.children else None
+            else:
+                other = active.parent
+            if other is None:
+                self.report({'WARNING'}, f"'{active.name}' has no {'child' if step > 0 else 'parent'}")
+                return {'CANCELLED'}
+            return self.pick(context, arm, bones, other)
+        name = chain_step([b.name for b in bones], active.name, step)
+        if name is None:
+            self.report({'WARNING'}, f"'{active.name}' has no numbered chain to step through")
+            return {'CANCELLED'}
+        return self.pick(context, arm, bones, bones[name])
+
+
+class ARMATURE_OT_easybones_select_mirror(_Select, bpy.types.Operator):
+    """Make the active bone's mirror (.L <-> .R) the active bone"""
+    bl_idname = "armature.easybones_select_mirror"
+    bl_label = "EasyBones Select Mirror"
+
+    def execute(self, context):
+        arm, bones = bone_context(context)
+        active = bones.active
+        if active is None:
+            self.report({'WARNING'}, "No active bone")
+            return {'CANCELLED'}
+        flipped = bpy.utils.flip_name(active.name)
+        other = bones.get(flipped) if flipped != active.name else None
+        if other is None:
+            self.report({'WARNING'}, f"No mirror bone for '{active.name}'")
+            return {'CANCELLED'}
+        return self.pick(context, arm, bones, other)
+
+
+class ARMATURE_OT_easybones_select_next(_Select, bpy.types.Operator):
+    """Make the next bone the active bone. Follow Naming: next number in the name (spine.01 -> spine.02, the last wraps to the first). Follow Parenting: the first child"""
+    bl_idname = "armature.easybones_select_next"
+    bl_label = "EasyBones Select Next"
+
+    def execute(self, context):
+        return self.step(context, 1)
+
+
+class ARMATURE_OT_easybones_select_prev(_Select, bpy.types.Operator):
+    """Make the previous bone the active bone. Follow Naming: previous number in the name (spine.02 -> spine.01, the first wraps to the last). Follow Parenting: the parent"""
+    bl_idname = "armature.easybones_select_prev"
+    bl_label = "EasyBones Select Previous"
+
+    def execute(self, context):
+        return self.step(context, -1)
+
+
+class _Prefixes:
+    """Shared by the DEF -> ORG style ops; fields prefill from the panel, the redo panel edits them."""
+    bl_options = {'REGISTER', 'UNDO'}
+
+    from_prefix: bpy.props.StringProperty(name="From", description="Name prefix of the bones to take")
+    to_prefix: bpy.props.StringProperty(name="To", description="Name prefix that replaces it on the counterpart bones")
+    selected_only: bpy.props.BoolProperty(name="Selected Only", description="Only consider selected bones")
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'EDIT_ARMATURE', 'POSE'} and context.object and context.object.type == 'ARMATURE'
+
+    def invoke(self, context, event):
+        s = context.scene
+        self.from_prefix, self.to_prefix = s.easybones_from, s.easybones_to
+        self.selected_only = s.easybones_selected_only
+        return self.execute(context)
+
+    def check_prefixes(self):
+        if not self.from_prefix or self.from_prefix == self.to_prefix:
+            self.report({'ERROR'}, "Set different From and To prefixes")
+            return False
+        return True
+
+    def renamed(self, name):
+        """name with its From prefix swapped for To, or None if it doesn't start with From."""
+        return self.to_prefix + name[len(self.from_prefix):] if name.startswith(self.from_prefix) else None
+
+
+class ARMATURE_OT_easybones_copy_to_layer(_Prefixes, bpy.types.Operator):
+    """Copy the From* bones to To* (same position, hierarchy kept, non-deforming) into a bone collection named To. Does nothing if any new name already exists. Works from armature edit or pose mode"""
+    bl_idname = "armature.easybones_copy_to_layer"
+    bl_label = "EasyBones Clone Layer"
+
+    def execute(self, context):
+        if not self.check_prefixes():
+            return {'CANCELLED'}
+        arm = context.object
+        with armature_mode(context, 'EDIT'):
+            return self.clone(arm)
+
+    def clone(self, arm):
+        ebs = arm.data.edit_bones
+        src = [b for b in ebs if (not self.selected_only or b.select) and self.renamed(b.name)]
+        if not src:
+            self.report({'ERROR'}, f"No bones start with '{self.from_prefix}'")
+            return {'CANCELLED'}
+        taken = [self.renamed(b.name) for b in src if self.renamed(b.name) in ebs]
+        if taken:
+            self.report({'ERROR'}, f"Name conflict, nothing copied: {', '.join(taken[:3])}"
+                        + (" ..." if len(taken) > 3 else ""))
+            return {'CANCELLED'}
+
+        coll = arm.data.collections_all.get(self.to_prefix) or arm.data.collections.new(self.to_prefix)
+        copies = {}
+        for b in src:
+            c = ebs.new(self.renamed(b.name))
+            c.head, c.tail, c.roll = b.head, b.tail, b.roll
+            c.use_deform = False
+            copies[b.name] = c
+        for b in src:
+            c = copies[b.name]
+            c.parent = copies.get(b.parent.name, b.parent) if b.parent else None
+            c.use_connect = b.use_connect and c.parent is not None
+            for old in list(c.collections):
+                old.unassign(c)
+            coll.assign(c)
+        self.report({'INFO'}, f"Cloned {len(src)} bones to '{coll.name}'")
+        return {'FINISHED'}
+
+
+class POSE_OT_easybones_link_transforms(_Prefixes, bpy.types.Operator):
+    """Add a Copy Transforms constraint to each From* bone, targeting its To* counterpart. Bones already linked are skipped. Works from armature edit or pose mode"""
+    bl_idname = "pose.easybones_link_transforms"
+    bl_label = "EasyBones Copy Transform"
+
+    def execute(self, context):
+        if not self.check_prefixes():
+            return {'CANCELLED'}
+        arm = context.object
+        with armature_mode(context, 'POSE'):
+            return self.link(arm)
+
+    def link(self, arm):
+        pbs = arm.pose.bones
+        linked, missing = 0, []
+        for pb in [b for b in pbs if self.renamed(b.name)]:
+            if self.selected_only and not is_selected(pb):
+                continue
+            target = self.renamed(pb.name)
+            if target not in pbs:
+                missing.append(target)
+            elif not any(c.type == 'COPY_TRANSFORMS' and c.target == arm and c.subtarget == target
+                         for c in pb.constraints):
+                con = pb.constraints.new('COPY_TRANSFORMS')
+                con.target, con.subtarget = arm, target
+                linked += 1
+        for name in missing:
+            print(f"EasyBones: {name} not found")
+        if missing:
+            self.report({'WARNING'}, f"Linked {linked}; {len(missing)} counterparts not found (see console)")
+        elif linked:
+            self.report({'INFO'}, f"Linked {linked} bones")
+        else:
+            self.report({'WARNING'}, f"Nothing to link for '{self.from_prefix}'")
+        return {'FINISHED'} if linked else {'CANCELLED'}
+
+
+
+class EASYBONES_MT_select_pie(bpy.types.Menu):
+    bl_label = "EasyBones Select"
+
+    def draw(self, context):
+        pie = self.layout.menu_pie()
+        pie.operator("armature.easybones_select_prev", text="Previous", icon='TRIA_LEFT')
+        pie.operator("armature.easybones_select_next", text="Next", icon='TRIA_RIGHT')
+        pie.operator("armature.easybones_select_mirror", text="Mirror", icon='MOD_MIRROR')
 
 
 class EASYBONES_MT_pie(bpy.types.Menu):
@@ -389,16 +644,57 @@ class EASYBONES_PT_panel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "Rigging"  # overwritten from prefs on register
-    bl_context = "mesh_edit"
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'EDIT_MESH', 'EDIT_ARMATURE', 'POSE', 'PAINT_WEIGHT'}
 
     def draw(self, context):
-        s = context.scene
+        mode = context.mode
         col = self.layout.column()
-        col.prop(s, "easybones_armature", text="")
-        col.prop(s, "easybones_roll")
-        arm = target_armature(context)
-        if arm:
-            col.prop_search(arm.data.bones, "active", arm.data, "bones", text="Active")
+        col.separator()
+        col.prop(context.scene, "easybones_armature", text="Armature")
+        if mode != 'PAINT_WEIGHT':
+            col.operator("mesh.easybones_flip", text="Flip to Armature" if mode == 'EDIT_MESH' else "Flip to Mesh",
+                         icon='ARROW_LEFTRIGHT')
+        ctx = bone_context(context)
+        if ctx:
+            arm, bones = ctx
+            holder, search = (bones, "edit_bones") if mode == 'EDIT_ARMATURE' else (bones, "bones")
+            col.prop_search(holder, "active", arm.data, search, text="Active")
+
+
+class EASYBONES_PT_select(bpy.types.Panel):
+    bl_label = "Select Bone"
+    bl_parent_id = "EASYBONES_PT_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+
+    @classmethod
+    def poll(cls, context):
+        return bone_context(context) is not None
+
+    def draw(self, context):
+        col = self.layout.column()
+        col.prop(context.scene, "easybones_follow", expand=True)
+        row = col.row(align=True)
+        row.operator("armature.easybones_select_prev", text="Prev", icon='TRIA_LEFT')
+        row.operator("armature.easybones_select_next", text="Next", icon='TRIA_RIGHT')
+        col.operator("armature.easybones_select_mirror", text="Mirror (.L / .R)", icon='MOD_MIRROR')
+
+
+class EASYBONES_PT_mesh(bpy.types.Panel):
+    bl_label = "Place Bones"
+    bl_parent_id = "EASYBONES_PT_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'EDIT_MESH'
+
+    def draw(self, context):
+        col = self.layout.column()
         row = col.row(align=True)
         row.operator("mesh.easybones_new", text="New")
         row.operator("mesh.easybones_extend", text="Extend")
@@ -407,13 +703,40 @@ class EASYBONES_PT_panel(bpy.types.Panel):
         row.operator("mesh.easybones_head", text="Head")
         row.operator("mesh.easybones_tail", text="Tail")
         row.operator("mesh.easybones_move", text="Move")
-        col.operator("mesh.easybones_flip", text="Flip to Armature")
+
+
+class EASYBONES_PT_rig(bpy.types.Panel):
+    bl_label = "Rig Layers"
+    bl_parent_id = "EASYBONES_PT_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode in {'EDIT_ARMATURE', 'POSE'}
+
+    def draw(self, context):
+        s = context.scene
+        col = self.layout.column()
+        row = col.row(align=True)
+        row.prop(s, "easybones_from", text="")
+        row.label(text="", icon='FORWARD')
+        row.prop(s, "easybones_to", text="")
+        col.prop(s, "easybones_selected_only")
+        col.operator("armature.easybones_copy_to_layer", text="Clone Layer", icon='DUPLICATE')
+        col.operator("pose.easybones_link_transforms", text="Copy Transform", icon='CON_TRANSLIKE')
+
+
+PANELS = (EASYBONES_PT_panel, EASYBONES_PT_select, EASYBONES_PT_mesh, EASYBONES_PT_rig)
 
 
 def update_category(self, context):
-    bpy.utils.unregister_class(EASYBONES_PT_panel)
+    for p in reversed(PANELS):
+        bpy.utils.unregister_class(p)
     EASYBONES_PT_panel.bl_category = self.panel_category
-    bpy.utils.register_class(EASYBONES_PT_panel)
+    for p in PANELS:
+        bpy.utils.register_class(p)
+
 
 
 class EASYBONES_Prefs(bpy.types.AddonPreferences):
@@ -431,9 +754,21 @@ class EASYBONES_Prefs(bpy.types.AddonPreferences):
 
 classes = (MESH_OT_easybones_new, MESH_OT_easybones_head, MESH_OT_easybones_tail,
            MESH_OT_easybones_move, MESH_OT_easybones_extend, MESH_OT_easybones_span,
-           MESH_OT_easybones_flip, EASYBONES_MT_pie)
-OPS = ("mesh.easybones_new", "mesh.easybones_head", "mesh.easybones_tail",
-       "mesh.easybones_move", "mesh.easybones_extend", "mesh.easybones_span")
+           MESH_OT_easybones_flip,
+           ARMATURE_OT_easybones_select_mirror, ARMATURE_OT_easybones_select_next,
+           ARMATURE_OT_easybones_select_prev,
+           ARMATURE_OT_easybones_copy_to_layer, POSE_OT_easybones_link_transforms,
+           EASYBONES_MT_pie, EASYBONES_MT_select_pie)
+SELECT_OPS = ("armature.easybones_select_mirror", "armature.easybones_select_next",
+              "armature.easybones_select_prev")
+# keymap -> operators listed unbound in Preferences > Keymap, ready to assign
+UNBOUND = {
+    "Mesh": ("mesh.easybones_new", "mesh.easybones_head", "mesh.easybones_tail",
+             "mesh.easybones_move", "mesh.easybones_extend", "mesh.easybones_span") + SELECT_OPS,
+    "Armature": SELECT_OPS + ("armature.easybones_copy_to_layer",),
+    "Pose": SELECT_OPS + ("pose.easybones_link_transforms",),
+    "Weight Paint": SELECT_OPS,
+}
 addon_keymaps = []
 
 
@@ -442,39 +777,60 @@ def register():
     S.easybones_armature = bpy.props.PointerProperty(
         name="Armature", description="Armature that EasyBones creates and edits bones in",
         type=bpy.types.Object, poll=lambda self, ob: ob.type == 'ARMATURE')
-    S.easybones_roll = bpy.props.EnumProperty(
-        name="Roll", items=roll_items, default=0, description="Default roll mode for EasyBones tools")
     S.easybones_flip = bpy.props.StringProperty(options={'HIDDEN'})  # meshes Flip returns to
+    S.easybones_from = bpy.props.StringProperty(
+        name="From", default="DEF",
+        description="Name prefix of the bones Clone Layer / Copy Transform take (e.g. DEF)")
+    S.easybones_to = bpy.props.StringProperty(
+        name="To", default="ORG", description="Name prefix of their counterparts, e.g. ORG. Clone Layer also puts the copies in a "
+                    "bone collection with this name")
+    S.easybones_selected_only = bpy.props.BoolProperty(
+        name="Selected Only", description="Clone Layer / Copy Transform only touch the selected bones")
+    S.easybones_follow = bpy.props.EnumProperty(
+        name="Follow", default='NAMING', items=[
+            ('NAMING', "Naming", "Prev/Next step through the number in the bone name (spine.01 -> spine.02) and cycle: the last goes back to the first"),
+            ('PARENTING', "Parenting", "Next goes to the first child, Prev to the parent")],
+        description="How Prev/Next walk the chain")
     for c in classes:
         bpy.utils.register_class(c)
     bpy.utils.register_class(EASYBONES_Prefs)
     addon = bpy.context.preferences.addons.get(__package__)
     if addon:
         EASYBONES_PT_panel.bl_category = addon.preferences.panel_category
-    bpy.utils.register_class(EASYBONES_PT_panel)
+    for p in PANELS:
+        bpy.utils.register_class(p)
 
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc:
-        km = kc.keymaps.new(name="Mesh")
-        kmi = km.keymap_items.new("wm.call_menu_pie", 'B', 'PRESS', shift=True, alt=True)
-        kmi.properties.name = "EASYBONES_MT_pie"
-        addon_keymaps.append((km, kmi))
-        # Unbound entries so they show in Preferences > Keymap > Mesh, ready to assign
-        for op in OPS:
-            addon_keymaps.append((km, km.keymap_items.new(op, 'NONE', 'PRESS')))
-        km = kc.keymaps.new(name="Armature")
-        addon_keymaps.append((km, km.keymap_items.new(
-            "mesh.easybones_flip", 'B', 'PRESS', shift=True, alt=True)))
+        def bind(km, idname, key, pie=False, **mods):
+            kmi = km.keymap_items.new("wm.call_menu_pie" if pie else idname, key, 'PRESS', **mods)
+            if pie:
+                kmi.properties.name = idname
+            addon_keymaps.append((km, kmi))
+
+        maps = {name: kc.keymaps.new(name=name) for name in UNBOUND}
+        for name, km in maps.items():
+            if name != "Weight Paint":
+                bind(km, "mesh.easybones_flip", 'BACK_SLASH')
+            bind(km, "EASYBONES_MT_select_pie", 'BACK_SLASH', pie=True, shift=True)
+        bind(maps["Mesh"], "EASYBONES_MT_pie", 'BACK_SLASH', pie=True, alt=True)
+        for name, ops in UNBOUND.items():
+            for op in ops:
+                bind(maps[name], op, 'NONE')
 
 
 def unregister():
     for km, kmi in addon_keymaps:
         km.keymap_items.remove(kmi)
     addon_keymaps.clear()
-    bpy.utils.unregister_class(EASYBONES_PT_panel)
+    for p in reversed(PANELS):
+        bpy.utils.unregister_class(p)
     bpy.utils.unregister_class(EASYBONES_Prefs)
     for c in reversed(classes):
         bpy.utils.unregister_class(c)
     del bpy.types.Scene.easybones_armature
-    del bpy.types.Scene.easybones_roll
     del bpy.types.Scene.easybones_flip
+    del bpy.types.Scene.easybones_from
+    del bpy.types.Scene.easybones_to
+    del bpy.types.Scene.easybones_selected_only
+    del bpy.types.Scene.easybones_follow

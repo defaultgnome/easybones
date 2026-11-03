@@ -13,6 +13,14 @@ import easybones  # noqa: E402
 assert easybones.increment("finger.01.L") == "finger.02.L"
 assert easybones.increment("spine9") == "spine10"
 assert easybones.increment("arm.L") == "arm.L"
+names = ["spine.01", "spine.02", "spine.03", "arm.01.L", "arm.02.L", "arm.01.R", "tail", "a2", "a10"]
+assert easybones.chain_step(names, "spine.01", 1) == "spine.02"
+assert easybones.chain_step(names, "spine.03", 1) == "spine.01"  # wraps
+assert easybones.chain_step(names, "spine.01", -1) == "spine.03"
+assert easybones.chain_step(names, "arm.02.L", 1) == "arm.01.L"  # other side is its own chain
+assert easybones.chain_step(names, "arm.01.R", 1) is None  # alone in its chain
+assert easybones.chain_step(names, "tail", 1) is None  # no number
+assert easybones.chain_step(names, "a2", 1) == "a10"  # numeric, not alphabetical
 
 
 def close(a, b):
@@ -101,7 +109,7 @@ def expect_error(msg, op, **kw):
 
 
 select(lambda co: co.z < 0)  # bottom face -> center (0,0,-1)
-bpy.ops.mesh.easybones_new(name="leg.01.L", roll='GLOBAL_POS_Z')
+bpy.ops.mesh.easybones_new(name="leg.01.L")
 b = bones()["leg.01.L"]
 assert close(world(b, "head_local"), (0, 0, -1)), world(b, "head_local")
 assert b.parent is None
@@ -184,6 +192,75 @@ assert bpy.context.mode == 'EDIT_MESH' and bpy.context.object == cyl
 
 select(lambda co: False, cyl)
 expect_error("No vertices selected", bpy.ops.mesh.easybones_tail)
+
+# Bone selection: mirror / next / prev, in mesh edit (active bone only), armature edit and pose
+bpy.ops.object.mode_set(mode='OBJECT')
+bpy.context.view_layer.objects.active = arm
+bpy.ops.object.mode_set(mode='EDIT')
+for n in ("DEF_a.L", "DEF_a.R", "DEF_b.01", "DEF_b.02", "DEF_b.03", "ORG_x"):
+    arm.data.edit_bones.new(n).tail = (0, 0, 1)
+arm.data.edit_bones.active = arm.data.edit_bones["DEF_a.L"]
+bpy.ops.armature.easybones_select_mirror()
+assert arm.data.edit_bones.active.name == "DEF_a.R" and arm.data.edit_bones["DEF_a.R"].select
+assert not arm.data.edit_bones["DEF_a.L"].select
+bpy.ops.armature.easybones_select_next()  # no number: warns, active stays
+assert arm.data.edit_bones.active.name == "DEF_a.R"
+arm.data.edit_bones.active = arm.data.edit_bones["DEF_b.03"]
+bpy.ops.armature.easybones_select_next()
+assert arm.data.edit_bones.active.name == "DEF_b.01"
+bpy.ops.armature.easybones_select_prev()
+assert arm.data.edit_bones.active.name == "DEF_b.03"
+arm.data.edit_bones.active = arm.data.edit_bones["ORG_x"]
+bpy.ops.armature.easybones_select_mirror()  # no mirror: warns, active stays
+assert arm.data.edit_bones.active.name == "ORG_x"
+
+# Copy to Layer: DEF -> ORG in an ORG collection; a conflict does nothing
+arm.data.edit_bones.active = arm.data.edit_bones["DEF_b.01"]
+arm.data.edit_bones["DEF_b.02"].parent = arm.data.edit_bones["DEF_b.01"]
+bpy.ops.armature.easybones_copy_to_layer(from_prefix="DEF", to_prefix="ORG")
+ebs = arm.data.edit_bones
+assert all(f"ORG_{n}" in ebs for n in ("a.L", "a.R", "b.01", "b.02", "b.03"))
+assert ebs["ORG_b.02"].parent == ebs["ORG_b.01"] and not ebs["ORG_b.01"].use_deform
+assert [c.name for c in ebs["ORG_a.L"].collections] == ["ORG"]
+n_bones = len(ebs)
+expect_error("Name conflict", bpy.ops.armature.easybones_copy_to_layer, from_prefix="DEF", to_prefix="ORG")
+assert len(arm.data.edit_bones) == n_bones
+
+# Link Transforms: Copy Transforms DEF -> ORG, idempotent
+bpy.ops.object.mode_set(mode='POSE')
+bpy.ops.pose.easybones_link_transforms(from_prefix="DEF", to_prefix="ORG")
+con = arm.pose.bones["DEF_a.L"].constraints[0]
+assert con.type == 'COPY_TRANSFORMS' and con.target == arm and con.subtarget == "ORG_a.L"
+assert bpy.ops.pose.easybones_link_transforms(from_prefix="DEF", to_prefix="ORG") == {'CANCELLED'}  # nothing new
+assert len(arm.pose.bones["DEF_a.L"].constraints) == 1
+
+# Follow parenting: Next = first child, Prev = parent
+bpy.ops.object.mode_set(mode='POSE')
+bpy.context.scene.easybones_follow = 'PARENTING'
+arm.data.bones.active = arm.data.bones["DEF_b.01"]
+bpy.ops.armature.easybones_select_next()
+assert arm.data.bones.active.name == "DEF_b.02"
+bpy.ops.armature.easybones_select_prev()
+assert arm.data.bones.active.name == "DEF_b.01"
+bpy.context.scene.easybones_follow = 'NAMING'
+
+# Copy Transform from edit mode (hops to pose and back), Clone Layer from pose mode
+bpy.ops.object.mode_set(mode='EDIT')
+arm.data.edit_bones.new("DEF_z").tail = (0, 0, 1)
+arm.data.edit_bones.new("ORG_z").tail = (0, 0, 1)
+bpy.ops.pose.easybones_link_transforms(from_prefix="DEF_z", to_prefix="ORG_z")
+assert bpy.context.mode == 'EDIT_ARMATURE'
+bpy.ops.object.mode_set(mode='POSE')
+assert arm.pose.bones["DEF_z"].constraints[0].subtarget == "ORG_z"
+expect_error("Name conflict", bpy.ops.armature.easybones_copy_to_layer, from_prefix="DEF_b", to_prefix="ORG_b")
+assert bpy.context.mode == 'POSE'
+
+# Flip works from pose mode too, back to the meshes it came from
+edit(cyl)
+bpy.ops.mesh.easybones_flip()
+bpy.ops.object.mode_set(mode='POSE')
+bpy.ops.mesh.easybones_flip()
+assert bpy.context.mode == 'EDIT_MESH' and bpy.context.object == cyl
 assert easybones.EASYBONES_PT_panel.bl_category == "Rigging"
 easybones.unregister()
 print("EASYBONES OK")

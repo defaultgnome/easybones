@@ -1,7 +1,16 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0]
 
+- Bone selection: Mirror (`.L`/`.R`), Next and Prev in mesh edit, armature edit, pose and weight paint, with a Selection pie. Follow toggle: by name number (wraps) or by parenting (child / parent).
+- Clone Layer: copy `DEF*` bones to `ORG*` into an `ORG` bone collection; refuses on name conflicts.
+- Copy Transform: Copy Transforms constraints from `DEF*` to their `ORG*` counterparts. Both work from armature edit or pose mode, with a Selected Only toggle.
+- Panel reorganized into Select Bone / Place Bones / Rig Layers groups, Armature field and Flip first, then the Active bone field.
+- Weight paint: Prev/Next/Mirror also activate the bone's vertex group (like Ctrl+Shift+click).
+- Fix: Copy Transform with Selected Only crashed.
+- Flip also works from pose mode.
+- New default shortcuts: `\` Flip, `Shift+\` Selection pie, `Alt+\` EasyBones pie (was Shift+Alt+B). The sidebar now also shows in armature edit and pose.
+- Removed Roll (sidebar setting, redo option and the roll recalculation).
 - Move: translate the whole active bone so its head lands on the selection center (keeps length and direction).
 - Removed parenting: the Parent field, Parent op and pie entry are gone. New and Span bones are unparented; Extend still connects to the active bone. Parent in armature edit (Ctrl+P).
 
